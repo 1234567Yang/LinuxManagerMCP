@@ -519,11 +519,22 @@ def _build_privilege_kwargs(username: "str | None") -> dict:
     server 跑在 venv 里时 VIRTUAL_ENV / PATH 会漏进 shell —— 那个 venv 是 server
     自己的,跟用户命令没关系。
     """
+    identity: dict = {}
+
     if username is None:
-        pw = pwd.getpwuid(os.geteuid())
-        identity = {}
+        try:
+            pw = pwd.getpwuid(os.geteuid())
+            home, name, login_shell = pw.pw_dir, pw.pw_name, pw.pw_shell
+        except KeyError:
+            # 当前 uid 在 /etc/passwd 里没条目,比如容器里 docker run --user 1234。
+            # 这不是错误,只是查不到,凑一份能用的默认值继续。
+            home, name, login_shell = "/tmp", str(os.geteuid()), SHELL_PATH
     else:
+        # 这里的 KeyError 是故意不兜的:RUN_AS_USER 不存在就该起不来,
+        # 否则会静默地以 root 身份执行 LLM 发来的命令。
         pw = pwd.getpwnam(username)
+        home, name, login_shell = pw.pw_dir, pw.pw_name, pw.pw_shell
+
         # 只给 user= 的话附加组会原样继承 root 的,必须显式重算
         groups = {g.gr_gid for g in grp.getgrall() if username in g.gr_mem}
         groups.add(pw.pw_gid)
@@ -536,10 +547,10 @@ def _build_privilege_kwargs(username: "str | None") -> dict:
     return {
         **identity,
         "env": {
-            "HOME": pw.pw_dir,
-            "USER": pw.pw_name,
-            "LOGNAME": pw.pw_name,
-            "SHELL": pw.pw_shell,
+            "HOME": home,
+            "USER": name,
+            "LOGNAME": name,
+            "SHELL": login_shell,
             "PATH": "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "LANG": os.environ.get("LANG", "C.UTF-8"),
         },
