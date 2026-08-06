@@ -1,0 +1,9 @@
+# Python >= 3.10
+#   - match 语句需要 3.10
+#   - subprocess 的 user= / group= / extra_groups= 降权参数需要 3.9
+#
+# pip install -r requirements.txt
+
+mcp>=2,<3
+uvicorn[standard]>=0.30
+starlette>=0.37
