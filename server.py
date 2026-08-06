@@ -50,8 +50,12 @@ class OutputSlice(NamedTuple):
 class ShellSession:
     """一个常驻 shell 进程。cwd / 环境变量 / 后台任务在多次调用之间保持。"""
 
-    def __init__(self, identifier: str):
+    def __init__(self, identifier: str, sudo: bool = False):
+        if sudo and SUDO_KWARGS is None:
+            raise RuntimeError("the server is not running as root")
+
         self.identifier = identifier
+        self.sudo = sudo
         self.output: "queue.Queue[str | None]" = queue.Queue()
 
         self.lock = threading.Lock()  # 只保护下面这几个字段
@@ -72,7 +76,7 @@ class ShellSession:
             cwd="/",
             text=True,
             bufsize=1,  # 行缓冲
-            **DROP_PRIVILEGE_KWARGS,
+            **(SUDO_KWARGS if sudo else DROP_PRIVILEGE_KWARGS),
         )
 
         # 必须一直把 stdout 抽干,管道写满了 shell 会直接卡死
@@ -420,13 +424,16 @@ def create_shell_session(identifier: str, notes: str, keep_session: bool, sudo: 
     :param identifier: A unique identifier for the shell session. It must be 1-64 characters long and can only contain letters, numbers, underscores, hyphens, and periods.
     :param notes: Notes for the shell session, describing what it is being used for. It can be any string, including an empty one.
     :param keep_session: If true, the shell session will be kept alive after the first command execution. If false, the shell session will be closed after the first command execution. Use false when a single command is all you need.
-    :param sudo: If true, the shell session will be created with sudo privileges. If false, the shell session will be created with normal permissions. Sudo sessions are not implemented yet, so passing true currently fails. Keep in mind to use this parameter with caution.
+    :param sudo: If true, every command in the session runs as root, with no restrictions whatsoever. If false, they run as an unprivileged user that cannot modify the system. Use false unless the task genuinely requires root, and prefer keep_session=false for a privileged session so it is not left lying around. Passing true fails if the server itself is not running as root.
 
     :return: If succeed, returns string "Succeed". If creation failed, returns the reason.
     """
 
-    if sudo:
-        return "sudo sessions are not implemented yet; call again with sudo=false."
+    if sudo and SUDO_KWARGS is None:
+        return (
+            "Sudo sessions are unavailable because the server itself is not running "
+            "as root, so it has no privileges to hand out. Call again with sudo=false."
+        )
 
     if not _IDENTIFIER_RE.match(identifier):
         return "Invalid identifier: 1-64 characters from [A-Za-z0-9_.-] only."
@@ -449,7 +456,7 @@ def create_shell_session(identifier: str, notes: str, keep_session: bool, sudo: 
             )
 
         try:
-            list_of_alive_shells[identifier] = (notes, ShellSession(identifier))
+            list_of_alive_shells[identifier] = (notes, ShellSession(identifier, sudo))
 
             if not keep_session:
                 list_of_temp_shells.append(identifier)
@@ -501,24 +508,37 @@ def force_close_shell_session(identifier: str) -> str:
     # return 
 
 
-def _build_drop_privilege_kwargs() -> dict:
-    """root 启动时返回降权用的 subprocess 参数;非 root 启动时返回空 dict。"""
-    if os.geteuid() != 0:
-        return {}  # 本来就不是 root,没权限也没必要降
+def _build_privilege_kwargs(username: "str | None") -> dict:
+    """Popen 的身份 + 环境参数。
 
-    pw = pwd.getpwnam(RUN_AS_USER)
-    # 只给 user= 的话附加组会原样继承 root 的,必须显式重算
-    groups = {g.gr_gid for g in grp.getgrall() if RUN_AS_USER in g.gr_mem}
-    groups.add(pw.pw_gid)
+    username 给了就降权到那个用户;给 None 表示保持 server 自己的身份。root 起的时候
+    后者就是 sudo session —— 不去 exec sudo,而是干脆不降权。真调 sudo 的话它会问密码,
+    而密码要从 stdin 读,那根管道正是我们发命令的控制通道,一读就乱了。
+
+    两种情况都显式给一份干净的 env。不给 env= 的话子进程会整份继承 os.environ,
+    server 跑在 venv 里时 VIRTUAL_ENV / PATH 会漏进 shell —— 那个 venv 是 server
+    自己的,跟用户命令没关系。
+    """
+    if username is None:
+        pw = pwd.getpwuid(os.geteuid())
+        identity = {}
+    else:
+        pw = pwd.getpwnam(username)
+        # 只给 user= 的话附加组会原样继承 root 的,必须显式重算
+        groups = {g.gr_gid for g in grp.getgrall() if username in g.gr_mem}
+        groups.add(pw.pw_gid)
+        identity = {
+            "user": pw.pw_uid,
+            "group": pw.pw_gid,
+            "extra_groups": sorted(groups),
+        }
 
     return {
-        "user": pw.pw_uid,
-        "group": pw.pw_gid,
-        "extra_groups": sorted(groups),
+        **identity,
         "env": {
             "HOME": pw.pw_dir,
-            "USER": RUN_AS_USER,
-            "LOGNAME": RUN_AS_USER,
+            "USER": pw.pw_name,
+            "LOGNAME": pw.pw_name,
             "SHELL": pw.pw_shell,
             "PATH": "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
             "LANG": os.environ.get("LANG", "C.UTF-8"),
@@ -526,7 +546,14 @@ def _build_drop_privilege_kwargs() -> dict:
     }
 
 
-DROP_PRIVILEGE_KWARGS = _build_drop_privilege_kwargs()
+_IS_ROOT = os.geteuid() == 0
+
+# 普通 session:root 起的降权到 RUN_AS_USER;非 root 起的本来就没权限可降,保持原身份。
+# 两种情况都过 _build_privilege_kwargs,为的是拿那份干净 env(不然 shell 会继承 venv)。
+DROP_PRIVILEGE_KWARGS = _build_privilege_kwargs(RUN_AS_USER if _IS_ROOT else None)
+
+# sudo session:保持 root。非 root 启动时无从提权,置 None 表示这功能不可用
+SUDO_KWARGS = _build_privilege_kwargs(None) if _IS_ROOT else None
 
 
 
@@ -538,7 +565,7 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
 
     The command runs in the session's current working directory and inherits the environment variables it has accumulated, so 'cd' and 'export' from earlier commands still apply. Only one command can run per session at a time.
 
-    :param shell_id: The identifier of the shell session to run the command in. Create one with create_shell_session first.
+    :param shell_id: The identifier of the shell session to run the command in. Create one with create_shell_session first. Whether the command runs as root is fixed when the session is created, so do not prefix the command with 'sudo'; create a session with sudo=true instead.
     :param command: The command to execute. Avoid commands that read from standard input, such as a bare 'cat' or an interactive interpreter, because they will consume the session's control channel and break it.
     :param waittime: Seconds to wait for the command to finish. If it is still running at this point, the output produced so far is returned and the command keeps running in the background. It is NOT killed. Use get_output to collect the rest.
     :param timeout: Hard limit in seconds, counted from the start of the command. A command still running at this point is killed, together with its shell session. Must be greater than or equal to waittime.
