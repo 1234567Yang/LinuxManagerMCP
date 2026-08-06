@@ -1,0 +1,1 @@
+dxt pack . output.dxt

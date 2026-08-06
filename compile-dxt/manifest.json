@@ -1,0 +1,41 @@
+{
+  "dxt_version": "0.2",
+  "name": "linux-exec",
+  "display_name": "Linux Command Executor",
+  "version": "1.1.0",
+  "description": "Execute commands on remote Linux machine",
+  "author": { "name": "Yang" },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js",
+        "-y",
+        "mcp-remote",
+        "${user_config.server_url}",
+        "--header",
+        "Authorization:${AUTH_HEADER}"
+      ],
+      "env": {
+        "AUTH_HEADER": "Bearer ${user_config.token}"
+      }
+    }
+  },
+  "user_config": {
+    "server_url": {
+      "type": "string",
+      "title": "Server URL",
+      "description": "MCP 服务端地址,例如 https://example.com/mcp",
+      "required": true
+    },
+    "token": {
+      "type": "string",
+      "title": "Bearer Token",
+      "description": "服务器鉴权令牌",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}
