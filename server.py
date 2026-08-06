@@ -222,6 +222,25 @@ class ShellSession:
                 discarded=self.discarded,
             )
 
+    def get_output_tail(self, count: int) -> OutputSlice:
+        """读当前命令输出的最后 count 个字符。
+
+        和 read_output 一样是纯读。起点会被已丢弃的部分顶住,所以实际拿到的可能少于
+        count 个字符。整体加锁,避免"先问总长、再取片段"这两步之间又来了新输出。
+        """
+        with self.lock:
+            text = "".join(self.buffer)
+            total = self.discarded + len(text)
+            start = max(total - count, self.discarded, 0)
+            self.cursor = max(self.cursor, total)
+            return OutputSlice(
+                text=text[start - self.discarded :],
+                start=start,
+                end=total,
+                total=total,
+                discarded=self.discarded,
+            )
+
     def _collect(self, marker: str, deadline: float) -> str:
         """读到 marker 为止,返回退出码;输出边读边追加到 self.buffer。
 
@@ -745,16 +764,42 @@ def input_information(shell_id: str, text: str, press_enter: bool = True) -> str
 
 
 @mcp.tool()
-def get_output(shell_id: str, starting_char: int = 0) -> tuple[bool, str]:
+def get_output(
+    shell_id: str,
+    starting_char: "int | None" = None,
+    tail_char: "int | None" = None,
+) -> tuple[bool, str]:
     """
     Read the output of the command a shell session is running, or has most recently run.
 
     Use this after execute_command reported that a command is still running in the background, and to page through output that was truncated for being too long.
 
+    Choose exactly one of starting_char and tail_char. Pass starting_char to read forwards from a known offset, which is what you want when paging through a long result in order. Pass tail_char when you only care about how something ended, such as the last screenful of a build log.
+
     :param shell_id: The identifier of the shell session to read from.
-    :param starting_char: The character offset to start reading at. Offsets are counted from the start of the current command's output and stay valid until the next command is started on this session. Defaults to 0, the beginning of that output.
+    :param starting_char: The character offset to start reading at. Offsets are counted from the start of the current command's output and stay valid until the next command is started on this session, so pass 0 to read from the beginning. Leave this unset if you are using tail_char.
+    :param tail_char: The number of characters to read from the end of the output. Leave this unset if you are using starting_char.
     :return: A pair (finished, output). "finished" is true when the session is idle, meaning the command has completed and no further output will appear; poll this tool until it becomes true. The output is truncated if it exceeds the length limit, and the notice at the end reports starting_char, ending_char and the total length, so call this tool again with starting_char set to that ending_char to read the next piece. If the very oldest output was dropped because the command produced more than the buffer holds, a notice at the beginning says so. If the session was killed for exceeding its timeout it no longer exists, and this returns (true, error message).
     """
+    # 两个都不给的话没有"合理默认值"可选:从头读和读结尾是完全不同的意图,猜错了
+    # 模型会拿到一大段无关内容还以为自己看的是全部。
+    if (starting_char is None) and (tail_char is None):
+        return True, (
+            "Provide exactly one of starting_char and tail_char: starting_char to read "
+            "forwards from an offset, tail_char to read from the end."
+        )
+
+    if (starting_char is not None) and (tail_char is not None):
+        return True, (
+            "You can only choose one of starting_char and tail_char."
+        )
+    
+
+    if starting_char is not None and starting_char < 0:
+        return True, "starting_char must not be negative."
+    if tail_char is not None and tail_char <= 0:
+        return True, "tail_char must be a positive number of characters."
+
     with _sessions_lock:
         _reap_dead_sessions()
         entry = list_of_alive_shells.get(shell_id)
@@ -770,9 +815,22 @@ def get_output(shell_id: str, starting_char: int = 0) -> tuple[bool, str]:
     # 先读 busy 再读输出:反过来的话,两次读之间产生的输出会被漏掉,
     # 而调用方看到 finished=True 就不会再来取了。
     finished = not session.is_busy()
-    sl = session.read_output(starting_char, MAX_CHARS)
+
+    clamped_note = ""
+    if tail_char is not None:
+        # 尾部读同样受 MAX_CHARS 约束,但要砍的是"更早的那头",所以在这里先夹一下,
+        # 不能像 read_output 那样从起点开始数 limit 个。
+        if tail_char > MAX_CHARS:
+            clamped_note = (
+                f"[asked for the last {tail_char} characters but at most {MAX_CHARS} "
+                "are returned at a time; use starting_char to reach further back.]\n"
+            )
+        sl = session.get_output_tail(min(tail_char, MAX_CHARS))
+    else:
+        sl = session.read_output(starting_char, MAX_CHARS)
+
     truncated = _truncation_notice(sl)
-    output = _discard_notice(sl) + sl.text + truncated
+    output = clamped_note + _discard_notice(sl) + sl.text + truncated
 
     # 只在读到末尾时报退出码,免得分页读到一半就显示"结束了"
     if finished and not truncated and session.last_execution_result is not None:
