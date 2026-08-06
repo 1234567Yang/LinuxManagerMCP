@@ -650,10 +650,10 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
 
     _notes, session = entry
 
-    if not session._IS_ROOT and command.strip().startswith("sudo"):
+    if _IS_ROOT and not session.sudo and command.strip().startswith("sudo"):
         return (
-            "This shell session is does not have sudo privileges, so it cannot execute the command. "
-            "Create a new shell session with sudo=true if you need to run commands with sudo privileges."
+            "This shell session does not have sudo privileges, so this command would "
+            "fail. Create a new shell session with sudo=true and run it there."
         )
 
     # 同一个 session 一次只能跑一条命令,否则两边的输出会串在一起
