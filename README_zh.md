@@ -2,7 +2,7 @@
 
 <h1>Linux Manager MCP</h1>
 
-中文 · [English](README.md)
+[中文](README_zh.md) [English](README.md)
 
 <br>
 </div>
@@ -10,7 +10,7 @@
 
 > [!CAUTION]
 > 本项目属整活项目，请勿在生产环境中使用，请勿在任何有价值的机器上使用，否则后果自负。本项目安全性不做保证。<br>
-> 友链 /【合订本】收录论坛看到的AI删库事故（需登录）：https://linux.do/t/topic/1585027
+> 友链：Linux.do /【合订本】收录论坛看到的AI删库事故（需登录）：https://linux.do/t/topic/1585027
 ---
 
 ## 介绍：

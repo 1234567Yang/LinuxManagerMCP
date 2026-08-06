@@ -2,7 +2,7 @@
 
 <h1>Linux Manager MCP</h1>
 
-[中文](README_zh.md) · English
+[中文](README_zh.md) [English](README.md)
 
 <br>
 </div>
@@ -11,8 +11,7 @@
 > [!CAUTION]
 > This is a for-fun project. Do not use it in production, and do not use it on any machine you
 > care about — you are on your own if you do. No security guarantees are made.<br>
-> Related /【合订本】a collection of AI-wiped-my-server incidents seen on the forum (login
-> required): https://linux.do/t/topic/1585027
+> Friend link: Linux.do / A collection of AI-wiped-my-server incidents seen on the forum (login required): https://linux.do/t/topic/1585027
 ---
 
 ## Introduction
