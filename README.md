@@ -27,7 +27,7 @@
   * 方便 LLM 随时获取回忆，这个窗口为什么创建，都干了什么。
 * sudo 分离，默认无 sudo 权限。
   * 默认给 LLM 的 shell session 是非 sudo，LLM 需明确指示需要 sudo 时才会开启。
-  * sudo 开启权限可在程序中关闭。
+  * sudo 权限可在程序中关闭。
 
 ## TODO：
 更精细的控制划分，log系统。
