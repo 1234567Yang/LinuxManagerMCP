@@ -2,7 +2,7 @@
 
 <h1>Linux Manager MCP</h1>
 
-[中文](https://github.com/1234567Yang/) [English](TODO)
+[中文](https://github.com/1234567Yang/LinuxManagerMCP/) [English](https://github-com.translate.goog/1234567Yang/LinuxManagerMCP?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=zh-CN&_x_tr_pto=wapp)
 
 <br>
 </div>
