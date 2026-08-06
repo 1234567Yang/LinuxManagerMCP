@@ -1,3 +1,4 @@
+import base64
 import grp
 import hmac
 import os
@@ -88,6 +89,8 @@ class ShellSession:
         self.sudo = sudo
         self.output: "queue.Queue[str | None]" = queue.Queue()
 
+        self._write_lock = threading.Lock()  # 串行化对 shell stdin 的写入
+
         self.lock = threading.Lock()  # 只保护下面这几个字段
         self.busy = False  # 有命令在跑(可能已经转到后台了)
         self.last_command: "str | None" = None  # 最近一次写进 shell 的命令
@@ -126,9 +129,11 @@ class ShellSession:
         self.output.put(None)  # EOF 哨兵
 
     def write(self, data: str) -> None:
+        # run() 和 input_information 会从不同线程写同一根管道,加锁避免交错
         assert self.process.stdin is not None
-        self.process.stdin.write(data)
-        self.process.stdin.flush()
+        with self._write_lock:
+            self.process.stdin.write(data)
+            self.process.stdin.flush()
 
     def _probe(self, timeout: float) -> None:
         """跑一条 echo 确认 shell 真的活着且能执行命令。"""
@@ -262,8 +267,21 @@ class ShellSession:
 
         # 每条命令一个随机 marker,命令自己的输出撞上的概率可以忽略
         marker = f"{END_COMMAND_STR}{os.urandom(8).hex()}"
-        # 开头的 \n 保证 marker 独占一行(上条命令可能没以换行结尾)
-        self.write(f"{command}\nprintf '\\n%s %s\\n' '{marker}' \"$?\"\n")
+
+        # 命令和 marker 必须挤在同一行。bash 从管道读脚本是一行一行读、不预读的,
+        # 所以整行在执行前就已经进了解析器 —— 命令再怎么读 stdin,读到的都是这一行
+        # 之后的字节,也就是 input_information 写进去的东西,吃不掉 marker。
+        # 分成两行写的话,sudo 问密码 / 裸 cat 这类会把 printf 那行当成自己的输入吞掉,
+        # marker 永远不出现,session 一直挂到 timeout。
+        #
+        # 命令自身可能含换行(heredoc 等),所以 base64 编码后 eval,保证永远是一行。
+        # printf 开头的 \n 保证 marker 独占一行(命令输出可能没以换行结尾),
+        # $? 取的是 eval 的退出码,也就是命令自己的。
+        encoded = base64.b64encode(command.encode()).decode()
+        self.write(
+            f'eval "$(printf %s {encoded} | base64 -d)"; '
+            f"printf '\\n%s %s\\n' '{marker}' \"$?\"\n"
+        )
 
         started = time.monotonic()
 
@@ -607,7 +625,7 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
     The command runs in the session's current working directory and inherits the environment variables it has accumulated, so 'cd' and 'export' from earlier commands still apply. Only one command can run per session at a time.
 
     :param shell_id: The identifier of the shell session to run the command in. Create one with create_shell_session first. Whether the command runs as root is fixed when the session is created, so do not prefix the command with 'sudo'; create a session with sudo=true instead.
-    :param command: The command to execute. Avoid commands that read from standard input, such as a bare 'cat' or an interactive interpreter, because they will consume the session's control channel and break it.
+    :param command: The command to execute. If it prompts for input it will wait, and you can answer it with input_information; give such a command a short waittime so this tool returns promptly and lets you do that. Never prefix the command with 'sudo': the unprivileged user is not in the sudoers file, so it will only fail. Create a session with sudo=true instead.
     :param waittime: Seconds to wait for the command to finish. If it is still running at this point, the output produced so far is returned and the command keeps running in the background. It is NOT killed. Use get_output to collect the rest.
     :param timeout: Hard limit in seconds, counted from the start of the command. A command still running at this point is killed, together with its shell session. Must be greater than or equal to waittime.
 
@@ -680,6 +698,44 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
         _discard_session(shell_id, session)
 
     return prefix + out
+
+
+@mcp.tool()
+def input_information(shell_id: str, text: str, press_enter: bool = True) -> str:
+    """
+    Send text to the standard input of the command currently running in a shell session.
+
+    Use this when a command is waiting for input, such as a confirmation prompt, a password prompt, or an interactive interpreter. The command has to already be running, so the usual sequence is: call execute_command with a short waittime, get told that the command is still running in the background, send the input with this tool, then read what happened with get_output.
+
+    :param shell_id: The identifier of the shell session whose running command should receive the input.
+    :param text: The text to send. It is written to the command's standard input exactly as given.
+    :param press_enter: If true, a newline is appended, which is what almost every prompt waits for. Set it to false only for a command that reads single keystrokes without requiring Enter.
+
+    :return: "Succeed" once the text has been written. The command's reaction does not come back here, so call get_output to read it. If the session does not exist, or no command is running in it, returns the reason instead.
+    """
+    with _sessions_lock:
+        _reap_dead_sessions()
+        entry = list_of_alive_shells.get(shell_id)
+
+    if entry is None:
+        return "Shell session with this identifier does not exist."
+
+    _notes, session = entry
+
+    # 没有命令在跑的时候写进去,这行字会被 shell 当成一条命令执行掉
+    if not session.is_busy():
+        return (
+            "No command is running in this session, so nothing is waiting for input. "
+            "Use execute_command to run a command instead."
+        )
+
+    try:
+        session.write(text + "\n" if press_enter else text)
+    except Exception as e:
+        _discard_session(shell_id, session)
+        return f"Failed to send input: {e}. The shell session has been closed."
+
+    return "Succeed"
 
 
 @mcp.tool()
