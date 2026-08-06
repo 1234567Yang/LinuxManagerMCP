@@ -1,4 +1,5 @@
 import base64
+import codecs
 import grp
 import hmac
 import os
@@ -100,6 +101,7 @@ class ShellSession:
         self.buffer_chars = 0  # buffer 里现存的字符数
         self.discarded = 0  # 因为超上限从头丢掉的字符数
         self.cursor = 0  # 已经交给调用方的字符偏移,避免重复返回
+        self._carry = ""  # 尾部暂存,可能是 marker 的开头,见 _collect
 
         self.process = subprocess.Popen(
             [SHELL_PATH],
@@ -107,8 +109,10 @@ class ShellSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,  # 合流,保证 stdout/stderr 的先后顺序
             cwd="/",
-            text=True,
-            bufsize=1,  # 行缓冲
+            # 二进制 + 完全不缓冲。text=True 会套一层 TextIOWrapper,只能按行取;
+            # 交互式提示符("请输入名字: ")结尾没有换行,按行取就会一直卡住。
+            # 这里自己按字节块读、自己增量解码。
+            bufsize=0,
             **(SUDO_KWARGS if sudo else DROP_PRIVILEGE_KWARGS),
         )
 
@@ -123,17 +127,42 @@ class ShellSession:
             raise
 
     def _pump(self) -> None:
+        """把 shell 的输出源源不断搬进队列,按字节块,不按行。
+
+        按行读的话,结尾没有换行的半行会一直卡在缓冲里 —— 交互式命令的提示符
+        ("请输入名字: ")正好就是这种,等到后面某条输出补上换行才一起冒出来,
+        那时候调用方早就盲输过了。
+        """
         assert self.process.stdout is not None
-        for line in self.process.stdout:
-            self.output.put(line)
+        fd = self.process.stdout.fileno()
+        # 增量解码:一个 UTF-8 汉字可能被切在相邻两次 read 之间
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        while True:
+            try:
+                data = os.read(fd, 65536)  # 一次 read 系统调用,有多少拿多少
+            except OSError:
+                break
+            if not data:
+                break  # EOF
+            text = decoder.decode(data)
+            if text:
+                self.output.put(text)
+
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            self.output.put(tail)
         self.output.put(None)  # EOF 哨兵
 
     def write(self, data: str) -> None:
         # run() 和 input_information 会从不同线程写同一根管道,加锁避免交错
         assert self.process.stdin is not None
+        payload = data.encode()
+        fd = self.process.stdin.fileno()
         with self._write_lock:
-            self.process.stdin.write(data)
-            self.process.stdin.flush()
+            # 管道上超过 PIPE_BUF 的写入可能只写进去一部分,得循环
+            while payload:
+                payload = payload[os.write(fd, payload) :]
 
     def _probe(self, timeout: float) -> None:
         """跑一条 echo 确认 shell 真的活着且能执行命令。"""
@@ -141,19 +170,21 @@ class ShellSession:
         self.write(f"echo '{marker}'\n")
 
         deadline = time.monotonic() + timeout
+        seen = ""  # 队列里现在是字节块,marker 可能被切成两半
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"shell did not respond within {timeout}s")
             try:
-                line = self.output.get(timeout=remaining)
+                chunk = self.output.get(timeout=remaining)
             except queue.Empty:
                 continue
-            if line is None:
+            if chunk is None:
                 raise RuntimeError(
                     f"shell exited immediately (code {self.process.poll()})"
                 )
-            if marker in line:
+            seen += chunk
+            if marker in seen:
                 return
 
     def try_begin(self) -> bool:
@@ -172,10 +203,10 @@ class ShellSession:
         with self.lock:
             return self.busy
 
-    def _append_locked(self, line: str) -> None:
-        """往缓冲里塞一行,超上限就从头丢。调用方需持有 self.lock。"""
-        self.buffer.append(line)
-        self.buffer_chars += len(line)
+    def _append_locked(self, chunk: str) -> None:
+        """往缓冲里塞一块输出(未必是整行),超上限就从头丢。调用方需持有 self.lock。"""
+        self.buffer.append(chunk)
+        self.buffer_chars += len(chunk)
 
         while self.buffer_chars > MAX_BUFFER_CHARS and len(self.buffer) > 1:
             dropped = self.buffer.popleft()
@@ -241,26 +272,75 @@ class ShellSession:
                 discarded=self.discarded,
             )
 
+    @staticmethod
+    def _held_back(carry: str, needle: str) -> int:
+        """carry 末尾有多少个字符可能是 needle 的开头,必须留着等后续数据。"""
+        for n in range(min(len(carry), len(needle) - 1), 0, -1):
+            if needle.startswith(carry[-n:]):
+                return n
+        return 0
+
+    def _commit(self, text: str) -> None:
+        if text:
+            with self.lock:
+                self._append_locked(text)
+
     def _collect(self, marker: str, deadline: float) -> str:
         """读到 marker 为止,返回退出码;输出边读边追加到 self.buffer。
 
-        到点还没读到 marker 就抛 TimeoutError —— 注意已读到的部分留在 buffer 里,
-        不会丢。
+        队列里是字节块不是整行,所以 marker 可能被切开落在相邻两块里。self._carry
+        暂存"末尾那段有可能是 marker 开头"的字符,其余立刻提交 —— 这样结尾没有换行的
+        提示符也能马上被 get_output 看到,不用等下一行。
+
+        _carry 是实例字段而不是局部变量:前台超时转后台时会重新进这个函数,状态得接上。
+
+        到点还没读到 marker 就抛 TimeoutError,已读到的部分留在 buffer 里,不会丢。
+
+        为什么不干脆全部丢进 buffer、直接在 buffer 里找 marker(那样一个字符都不用扣):
+          1. marker 会漏给模型。buffer 是 get_output 直接读的,chunk 一进去,另一个
+             线程的 get_output 就可能抢在这里检测到之前把它读走,模型的输出里就会
+             冒出一行 [[[END]]]<hex> 0。
+          2. 事后把 marker 从 buffer 里抠掉会让偏移倒退。buffer_chars / total 都得
+             减小,而 starting_char 的契约是"偏移在这条命令期间稳定" —— 模型刚拿到
+             ending_char=5000,回头 total 变 4970,分页就错乱了。
+          3. 每来一块都在整个 buffer 里 find 是 O(n^2)。要只搜末尾一段的话,那又绕
+             回"维护一个窗口",就是 carry 换了个名字。
         """
+        # 带上前导 \n(printf 保证 marker 独占一行)。代价是任何以换行结尾的输出都会
+        # 被判定为"可能是 marker 开头",扣住 1 个字符等下一块 —— 所以 "foo\n" 会先
+        # 显示成 "foo"。去掉这个 \n 就没有这个滞后了([[[END]]] 加 16 位随机十六进制
+        # 本身已经足够独特),但那样输出里就少了我们注入的那个收尾换行,权衡之后保留。
+        needle = "\n" + marker
+
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
             try:
-                line = self.output.get(timeout=remaining)
+                chunk = self.output.get(timeout=remaining)
             except queue.Empty:
                 continue
-            if line is None:
+            if chunk is None:
                 raise RuntimeError(f"shell exited (code {self.process.poll()})")
-            if marker in line:
-                return line.split(marker, 1)[1].strip()
-            with self.lock:
-                self._append_locked(line)
+
+            self._carry += chunk
+
+            index = self._carry.find(needle)
+            if index != -1:
+                # marker 到了,但它后面的退出码和收尾换行未必读全了
+                rest = self._carry[index + len(needle) :]
+                newline = rest.find("\n")
+                if newline == -1:
+                    self._commit(self._carry[:index])
+                    self._carry = self._carry[index:]
+                    continue
+                self._commit(self._carry[:index])
+                self._carry = ""
+                return rest[:newline].strip()
+
+            hold = self._held_back(self._carry, needle)
+            self._commit(self._carry[: len(self._carry) - hold])
+            self._carry = self._carry[len(self._carry) - hold :]
 
     def run(
         self, command: str, waittime: float, timeout: float
@@ -283,6 +363,7 @@ class ShellSession:
             self.buffer_chars = 0
             self.discarded = 0
             self.cursor = 0
+            self._carry = ""
 
         # 每条命令一个随机 marker,命令自己的输出撞上的概率可以忽略
         marker = f"{END_COMMAND_STR}{os.urandom(8).hex()}"
