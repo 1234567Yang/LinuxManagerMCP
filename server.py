@@ -20,7 +20,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 TOKEN = "the_token"
 MAX_CHARS = 10_000
 END_COMMAND_STR : str = "[[[END]]]"
-MAX_COMMAND_TIMEOUT = 3600  # 上限,免得模型传个天文数字把 session 永久占死
+# MAX_COMMAND_TIMEOUT = 36000  # 上限,免得模型传个天文数字把 session 永久占死
+# 不用了，占死了 LLM 自己结束这个 shell 窗口
 
 # 即使 server 以 root 启动,命令也降权到这个用户执行。
 RUN_AS_USER = "mcpagent"
@@ -548,8 +549,8 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
         return "waittime and timeout must be positive numbers of seconds."
     if waittime > timeout:
         return "waittime must be less than or equal to timeout."
-    if timeout > MAX_COMMAND_TIMEOUT:
-        return f"timeout must be at most {MAX_COMMAND_TIMEOUT} seconds."
+    # if timeout > MAX_COMMAND_TIMEOUT:
+    #     return f"timeout must be at most {MAX_COMMAND_TIMEOUT} seconds."
 
     with _sessions_lock:
         _reap_dead_sessions()
