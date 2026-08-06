@@ -1,8 +1,5 @@
-[中文](README.md) [English]()
-
-
-
 <div align="center">
+
     <h1>Linux Manager MCP</h1>
 
     [中文](https://github.com/1234567Yang/) [English](TODO)
