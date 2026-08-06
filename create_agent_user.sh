@@ -61,3 +61,4 @@ echo "越权测试: $(su -s /bin/sh -c "touch /etc/.wtest 2>/dev/null && rm -f /
 
 echo
 echo "接下来把 server.py 里的 RUN_AS_USER 改成: $USERNAME"
+echo "Succeed"
