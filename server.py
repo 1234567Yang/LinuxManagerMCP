@@ -1,4 +1,5 @@
 import grp
+import hmac
 import os
 import pwd
 import queue
@@ -10,21 +11,50 @@ from collections import deque
 from typing import NamedTuple
 
 
-# pip install "mcp[cli]>=2,<3" "uvicorn[standard]" "starlette"
+# pip install -r requirements.txt
 import uvicorn
+from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 
-TOKEN = "the_token"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+# 配置分两层,都在 server.py 同目录(不依赖启动时的 cwd):
+#   .env          仓库里带的共享默认值,提交进 git
+#   .env_ignored  个人本地覆盖,被 gitignore;只写你要改的那几项就行
+# 真实环境变量(systemd Environment= / docker -e)优先级高于 .env,但低于 .env_ignored。
+load_dotenv(os.path.join(_HERE, ".env"))
+load_dotenv(os.path.join(_HERE, ".env_ignored"), override=True)
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    """逗号分隔的环境变量 → 列表。空项会被丢掉。"""
+    return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+
+
+# ---- 部署相关配置,全部来自 .env,见 .env.example ----
+TOKEN = os.getenv("MCP_TOKEN", "")
+ALLOWED_HOSTS = _env_list("MCP_ALLOWED_HOSTS", "127.0.0.1:*,localhost:*")
+ALLOWED_ORIGINS = _env_list("MCP_ALLOWED_ORIGINS")
+BIND_HOST = os.getenv("MCP_BIND_HOST", "127.0.0.1")
+BIND_PORT = int(os.getenv("MCP_BIND_PORT", "1949"))
+
+# 即使 server 以 root 启动,命令也降权到这个用户执行。
+RUN_AS_USER = os.getenv("MCP_RUN_AS_USER", "mcpagent")
+
+if not TOKEN:
+    # 空 token 会让鉴权退化成"任何人发 'Bearer ' 就能进",宁可起不来
+    raise SystemExit(
+        "MCP_TOKEN is not set. Put your settings in .env_ignored (git-ignored) "
+        "or edit .env."
+    )
+
 MAX_CHARS = 10_000
 END_COMMAND_STR : str = "[[[END]]]"
 # MAX_COMMAND_TIMEOUT = 36000  # 上限,免得模型传个天文数字把 session 永久占死
 # 不用了，占死了 LLM 自己结束这个 shell 窗口
-
-# 即使 server 以 root 启动,命令也降权到这个用户执行。
-RUN_AS_USER = "mcpagent"
 
 mcp = MCPServer("execute_command")
 
@@ -698,10 +728,15 @@ def get_output(shell_id: str, starting_char: int = 0) -> tuple[bool, str]:
     return finished, output
 
 
+_EXPECTED_AUTH = f"Bearer {TOKEN}"
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        # 期望 Authorization: Bearer my-secret-token
-        if request.headers.get("authorization") != f"Bearer {TOKEN}":
+        # 期望 Authorization: Bearer <MCP_TOKEN>
+        # compare_digest 是常数时间比较,普通 != 会因为提前返回而泄漏 token 前缀
+        supplied = request.headers.get("authorization", "")
+        if not hmac.compare_digest(supplied, _EXPECTED_AUTH):
             return JSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 
@@ -709,19 +744,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
 app = mcp.streamable_http_app(
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=[
-            "example.com",      # 裸域名：https 走 443，Host 头不带端口
-            "example.com:*",
-            "127.0.0.1:*",
-            "localhost:*",
-        ],
-        allowed_origins=[
-            "https://example.com",
-        ],
+        allowed_hosts=ALLOWED_HOSTS,
+        allowed_origins=ALLOWED_ORIGINS,
     ),
 )
 
 app.add_middleware(AuthMiddleware)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=1949)
+    uvicorn.run(app, host=BIND_HOST, port=BIND_PORT)

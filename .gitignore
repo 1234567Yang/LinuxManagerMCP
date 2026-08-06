@@ -1,0 +1,7 @@
+# 个人本地配置,覆盖 .env
+.env_ignored
+
+__pycache__/
+*.py[cod]
+venv/
+.venv/
