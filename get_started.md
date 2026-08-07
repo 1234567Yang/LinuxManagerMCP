@@ -50,7 +50,7 @@ The server only listens on `127.0.0.1:1949`. Point a Cloudflare Tunnel at
 ## Use:
 Ask the following:
 ```
-I just gave you an Linux machine MCP, check its RAM usage right now.
+I just gave you a Linux machine MCP, check its RAM usage right now.
 ```
 If it doesn't work, create a new chat, click more options -> Connectors -> Make sure to enable `Linux Command Executor`, and set `Tool access` to `Tools already loaded`.
 
