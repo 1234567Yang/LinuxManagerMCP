@@ -4,6 +4,9 @@
 
 [English](get_started.md)
 
+## Linux machine:
+Buy a cheap one from DigitalOcean or Microsoft Azure ($100 credit if you are a student). You can let this MCP add swap memory later after you installed it.
+
 ## Cloudflare:
 * Create a new [Cloudflare Account](https://dash.cloudflare.com/)
 * Take a brief look at [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)
@@ -34,7 +37,7 @@ The server only listens on `127.0.0.1:1949`. Point a Cloudflare Tunnel at
 ## LLM Config (use Claude as a demo):
 
 * Download the dxt from latest release: https://github.com/1234567Yang/LinuxManagerMCP/releases/latest
-* Download Claude Desktop and follow the instructions
+* Download [Claude Desktop](https://claude.com/download) and follow the instructions
 
 <img src="get_started/claude_desktop_1.jpg" width="700">
 <img src="get_started/claude_desktop_2.jpg" width="700">
