@@ -4,6 +4,11 @@
 
 [English](get_started.md)
 
+## Cloudflare:
+* Create a new [Cloudflare Account](https://dash.cloudflare.com/)
+* Take a brief look at [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)
+* Create a new Tunnel (you might need a domain), and install it on your Linux machine. Forward the tunnel to localhost:1949 with HTTP protocol.
+
 ## Server side:
 
 ```bash
