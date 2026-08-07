@@ -20,6 +20,10 @@ Give your LLM access to your Linux server and let it drive. Unlike OpenClaw, thi
 plugin: it needs no API key, and for now it has no memory either.
 
 
+## Get Started
+
+[Get Started](get_started.md)
+
 ## Demo
 
 English:

@@ -4,7 +4,17 @@
   "display_name": "Linux Command Executor",
   "version": "1.1.0",
   "description": "Execute commands on remote Linux machine",
-  "author": { "name": "Yang" },
+  "author": {
+    "name": "Yang",
+    "url": "https://github.com/1234567Yang"
+  },
+  "homepage": "https://github.com/1234567Yang/LinuxManagerMCP",
+  "documentation": "https://github.com/1234567Yang/LinuxManagerMCP#readme",
+  "support": "https://github.com/1234567Yang/LinuxManagerMCP/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1234567Yang/LinuxManagerMCP"
+  },
   "server": {
     "type": "node",
     "entry_point": "server/index.js",

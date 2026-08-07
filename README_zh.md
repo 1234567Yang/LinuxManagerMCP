@@ -17,6 +17,10 @@
 
 让你的大语言模型接入并代理你的 Linux 服务器。和 OpenClaw 不同的是，这是一个 MCP 插件，不需要用 API，而且目前也没有记忆功能。
 
+## 快速开始：
+
+[Get Started](get_started.md)
+
 ## Demo：
 English: 
 [Demo](demo.md)
