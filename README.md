@@ -9,15 +9,13 @@
 
 
 > [!CAUTION]
-> This is a for-fun project. Do not use it in production, and do not use it on any machine you
-> care about — you are on your own if you do. No security guarantees are made.<br>
+> This is a for-fun project. Do not use it in production, and do not use it on any machine you care about: you are on your own if you do. No security guarantees are made.<br>
 > Friend link: Linux.do / A collection of AI-wiped-my-server incidents seen on the forum (login required): https://linux.do/t/topic/1585027
 ---
 
 ## Introduction
 
-Give your LLM access to your Linux server and let it drive. Unlike OpenClaw, this is an MCP
-plugin: it needs no API key, and for now it has no memory either.
+Give your LLM access to your Linux server and let it drive. Unlike OpenClaw, this is an lite MCP plugin: it needs no API key, and for now it has no memory either.
 
 
 ## Get Started
@@ -35,10 +33,8 @@ English:
 ## Features
 
 * Multiple shell windows, with background execution.
-  * When you ask an LLM to install a dependency, a conventional MCP will just keep running until
-    the command finishes or the timeout kills it.
-  * This project lets the LLM open several shell windows, set its own foreground wait time and
-    hard kill time, and pull the output so far at any moment to see how things are going.
+  * When you ask an LLM to install a dependency, a conventional MCP will just keep running until the command finishes or the timeout kills it.
+  * This project lets the LLM open several shell windows, set its own foreground wait time and hard kill time, and pull the output so far at any moment to see how things are going.
 * Every shell window has a notes area.
   * So the LLM can remind itself why a window was opened and what has been done in it.
 * Sudo separation, no sudo privileges by default.
@@ -47,11 +43,6 @@ English:
 
 ## TODO
 
-Ctrl+C to interrupt a command (instead of killing the whole shell), finer-grained controls, a
-logging system, several people controlling the same machine.
+Ctrl+C to interrupt a command (instead of killing the whole shell), finer-grained controls, a logging system, several people controlling the same machine.
 
-## Misc
 
-Calling out A/'s damn Cybersecurity filter here: apparently driving a Linux box automatically
-counts as a security matter, so it cut me off halfway through and demanded I switch to Sunnet
-4.6. Pure aggravation.
