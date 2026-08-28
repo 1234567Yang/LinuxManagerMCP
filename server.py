@@ -43,6 +43,9 @@ ALLOWED_ORIGINS = _env_list("MCP_ALLOWED_ORIGINS")
 BIND_HOST = os.getenv("MCP_BIND_HOST", "127.0.0.1")
 BIND_PORT = int(os.getenv("MCP_BIND_PORT", "1949"))
 
+# 1 = Enable
+ENABLE_SUDO = int(os.getenv("ENABLE_SUDO", 0))
+
 # 即使 server 以 root 启动,命令也降权到这个用户执行。
 RUN_AS_USER = os.getenv("MCP_RUN_AS_USER", "mcpagent")
 
@@ -667,6 +670,9 @@ def _build_privilege_kwargs(username: "str | None") -> dict:
     server 跑在 venv 里时 VIRTUAL_ENV / PATH 会漏进 shell —— 那个 venv 是 server
     自己的,跟用户命令没关系。
     """
+    if ENABLE_SUDO == 0:
+        return None
+
     identity: dict = {}
 
     if username is None:
