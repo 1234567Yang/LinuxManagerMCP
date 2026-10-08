@@ -113,7 +113,7 @@ class ShellSession:
 
     def __init__(self, identifier: str, sudo: bool = False):
         if sudo and SUDO_KWARGS is None:
-            raise RuntimeError("the server is not running as root")
+            raise RuntimeError(_SUDO_UNAVAILABLE_REASON)
 
         self.identifier = identifier
         self.sudo = sudo
@@ -601,15 +601,15 @@ def create_shell_session(identifier: str, notes: str, keep_session: bool, sudo: 
     :param identifier: A unique identifier for the shell session. It must be 1-64 characters long and can only contain letters, numbers, underscores, hyphens, and periods.
     :param notes: Notes for the shell session, describing what it is being used for. It can be any string, including an empty one.
     :param keep_session: If true, the shell session will be kept alive after the first command execution. If false, the shell session will be closed after the first command execution. Use false when a single command is all you need.
-    :param sudo: If true, every command in the session runs as root, with no restrictions whatsoever. If false, they run as an unprivileged user that cannot modify the system. Use false unless the task genuinely requires root, and prefer keep_session=false for a privileged session so it is not left lying around. Passing true fails if the server itself is not running as root.
+    :param sudo: If true, every command in the session runs as root, with no restrictions whatsoever. If false, they run as an unprivileged user that cannot modify the system. Use false unless the task genuinely requires root, and prefer keep_session=false for a privileged session so it is not left lying around. Passing true fails if the server itself is not running as root, or if sudo sessions are disabled on this server.
 
     :return: If succeed, returns string "Succeed". If creation failed, returns the reason.
     """
 
     if sudo and SUDO_KWARGS is None:
         return (
-            "Sudo sessions are unavailable because the server itself is not running "
-            "as root, so it has no privileges to hand out. Call again with sudo=false."
+            f"Sudo sessions are unavailable because {_SUDO_UNAVAILABLE_REASON}. "
+            "Call again with sudo=false."
         )
 
     if not _IDENTIFIER_RE.match(identifier):
@@ -696,8 +696,8 @@ def _build_privilege_kwargs(username: "str | None") -> dict:
     server 跑在 venv 里时 VIRTUAL_ENV / PATH 会漏进 shell —— 那个 venv 是 server
     自己的,跟用户命令没关系。
     """
-    if ENABLE_SUDO == 0:
-        return None
+    # if ENABLE_SUDO == 0:
+    #     return None
 
     identity: dict = {}
 
@@ -743,8 +743,15 @@ _IS_ROOT = os.geteuid() == 0
 # 两种情况都过 _build_privilege_kwargs,为的是拿那份干净 env(不然 shell 会继承 venv)。
 DROP_PRIVILEGE_KWARGS = _build_privilege_kwargs(RUN_AS_USER if _IS_ROOT else None)
 
-# sudo session:保持 root。非 root 启动时无从提权,置 None 表示这功能不可用
-SUDO_KWARGS = _build_privilege_kwargs(None) if _IS_ROOT else None
+# sudo session:保持 root。非 root 启动时无从提权,或者 ENABLE_SUDO 关了,置 None 表示这功能不可用
+SUDO_KWARGS = _build_privilege_kwargs(None) if _IS_ROOT and ENABLE_SUDO else None
+
+if not ENABLE_SUDO:
+    _SUDO_UNAVAILABLE_REASON = "sudo sessions are disabled on this server (ENABLE_SUDO=0)"
+else:
+    _SUDO_UNAVAILABLE_REASON = (
+        "the server itself is not running as root, so it has no privileges to hand out"
+    )
 
 
 
