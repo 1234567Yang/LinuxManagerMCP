@@ -319,15 +319,15 @@ class ShellSession:
 
         队列里是字节块不是整行,所以 marker 可能被切开落在相邻两块里。self._carry
         暂存"末尾那段有可能是 marker 开头"的字符,其余立刻提交 —— 这样结尾没有换行的
-        提示符也能马上被 get_output 看到,不用等下一行。
+        提示符也能马上被 get_output_* 看到,不用等下一行。
 
         _carry 是实例字段而不是局部变量:前台超时转后台时会重新进这个函数,状态得接上。
 
         到点还没读到 marker 就抛 TimeoutError,已读到的部分留在 buffer 里,不会丢。
 
         为什么不干脆全部丢进 buffer、直接在 buffer 里找 marker(那样一个字符都不用扣):
-          1. marker 会漏给模型。buffer 是 get_output 直接读的,chunk 一进去,另一个
-             线程的 get_output 就可能抢在这里检测到之前把它读走,模型的输出里就会
+          1. marker 会漏给模型。buffer 是 get_output_* 直接读的,chunk 一进去,另一个
+             线程的 get_output_* 就可能抢在这里检测到之前把它读走,模型的输出里就会
              冒出一行 [[[END]]]<hex> 0。
           2. 事后把 marker 从 buffer 里抠掉会让偏移倒退。buffer_chars / total 都得
              减小,而 starting_char 的契约是"偏移在这条命令期间稳定" —— 模型刚拿到
@@ -495,7 +495,7 @@ def _truncation_notice(sl: OutputSlice) -> str:
     return (
         f"\n[string truncated (length > {MAX_CHARS} chars): "
         f"starting_char={sl.start}, ending_char={sl.end}, total={sl.total}. "
-        f"Call get_output with starting_char={sl.end} to read the rest.]"
+        f"Call get_output_beginning with starting_char={sl.end} to read the rest.]"
     )
 
 
@@ -758,10 +758,10 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
 
     :param shell_id: The identifier of the shell session to run the command in. Create one with create_shell_session first. Whether the command runs as root is fixed when the session is created, so do not prefix the command with 'sudo'; create a session with sudo=true instead.
     :param command: The command to execute. If it prompts for input it will wait, and you can answer it with input_information; give such a command a short waittime so this tool returns promptly and lets you do that. Never prefix the command with 'sudo': the unprivileged user is not in the sudoers file, so it will only fail. Create a session with sudo=true instead.
-    :param waittime: Seconds to wait for the command to finish. If it is still running at this point, the output produced so far is returned and the command keeps running in the background. It is NOT killed. Use get_output to collect the rest.
+    :param waittime: Seconds to wait for the command to finish. If it is still running at this point, the output produced so far is returned and the command keeps running in the background. It is NOT killed. Use get_output_beginning to collect the rest.
     :param timeout: Hard limit in seconds, counted from the start of the command. A command still running at this point is killed, together with its shell session. Must be greater than or equal to waittime.
 
-    :return: The output of the command, with stdout and stderr interleaved. A non-zero exit code is reported at the end. Output longer than the length limit is truncated, and the notice at the end tells you the offset to resume from with get_output. If the session does not exist, is already running another command, or died while running this one, returns the reason instead.
+    :return: The output of the command, with stdout and stderr interleaved. A non-zero exit code is reported at the end. Output longer than the length limit is truncated, and the notice at the end tells you the offset to resume from with get_output_beginning. If the session does not exist, is already running another command, or died while running this one, returns the reason instead.
     """
     if waittime <= 0 or timeout <= 0:
         return "waittime and timeout must be positive numbers of seconds."
@@ -799,7 +799,7 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
             "Wait for it, or call force_close_shell_session to kill it."
         )
 
-    # 上一条命令留下的、还没被 get_output 取走的输出,先带回去,免得被 run() 清掉
+    # 上一条命令留下的、还没被 get_output_* 取走的输出,先带回去,免得被 run() 清掉
     prefix = ""
     leftover = session.take_new_output()
     if leftover:
@@ -823,7 +823,7 @@ def execute_command(shell_id: str, command: str, waittime: int, timeout: int) ->
         return (
             f"{out}"
             f"\n[still running in the background after {waittime} seconds. The output "
-            "above is only what it has produced so far; call get_output on this "
+            "above is only what it has produced so far; call get_output_beginning on this "
             f"session to collect the rest. It will be killed, along with its shell "
             f"session, if it has not finished {timeout} seconds after it started.]"
         )
@@ -846,13 +846,13 @@ def input_information(shell_id: str, text: str, press_enter: bool = True) -> str
     """
     Send text to the standard input of the command currently running in a shell session.
 
-    Use this when a command is waiting for input, such as a confirmation prompt, a password prompt, or an interactive interpreter. The command has to already be running, so the usual sequence is: call execute_command with a short waittime, get told that the command is still running in the background, send the input with this tool, then read what happened with get_output.
+    Use this when a command is waiting for input, such as a confirmation prompt, a password prompt, or an interactive interpreter. The command has to already be running, so the usual sequence is: call execute_command with a short waittime, get told that the command is still running in the background, send the input with this tool, then read what happened with get_output_tailing.
 
     :param shell_id: The identifier of the shell session whose running command should receive the input.
     :param text: The text to send. It is written to the command's standard input exactly as given.
     :param press_enter: If true, a newline is appended, which is what almost every prompt waits for. Set it to false only for a command that reads single keystrokes without requiring Enter.
 
-    :return: "Succeed" once the text has been written. The command's reaction does not come back here, so call get_output to read it. If the session does not exist, or no command is running in it, returns the reason instead.
+    :return: "Succeed" once the text has been written. The command's reaction does not come back here, so call get_output_tailing to read it. If the session does not exist, or no command is running in it, returns the reason instead.
     """
     with _sessions_lock:
         _reap_dead_sessions()
@@ -883,43 +883,8 @@ def input_information(shell_id: str, text: str, press_enter: bool = True) -> str
     return "Succeed"
 
 
-@mcp.tool()
-def get_output(
-    shell_id: str,
-    starting_char: "int | None" = None,
-    tail_char: "int | None" = None,
-) -> tuple[bool, str]:
-    """
-    Read the output of the command a shell session is running, or has most recently run.
-
-    Use this after execute_command reported that a command is still running in the background, and to page through output that was truncated for being too long.
-
-    Choose exactly one of starting_char and tail_char. Pass starting_char to read forwards from a known offset, which is what you want when paging through a long result in order. Pass tail_char when you only care about how something ended, such as the last screenful of a build log.
-
-    :param shell_id: The identifier of the shell session to read from.
-    :param starting_char: The character offset to start reading at. Offsets are counted from the start of the current command's output and stay valid until the next command is started on this session, so pass 0 to read from the beginning. Leave this unset if you are using tail_char.
-    :param tail_char: The number of characters to read from the end of the output. Leave this unset if you are using starting_char.
-    :return: A pair (finished, output). "finished" is true when the session is idle, meaning the command has completed and no further output will appear; poll this tool until it becomes true. The output is truncated if it exceeds the length limit, and the notice at the end reports starting_char, ending_char and the total length, so call this tool again with starting_char set to that ending_char to read the next piece. If the very oldest output was dropped because the command produced more than the buffer holds, a notice at the beginning says so. If the session was killed for exceeding its timeout it no longer exists, and this returns (true, error message).
-    """
-    # 两个都不给的话没有"合理默认值"可选:从头读和读结尾是完全不同的意图,猜错了
-    # 模型会拿到一大段无关内容还以为自己看的是全部。
-    if (starting_char is None) and (tail_char is None):
-        return True, (
-            "Provide exactly one of starting_char and tail_char: starting_char to read "
-            "forwards from an offset, tail_char to read from the end."
-        )
-
-    if (starting_char is not None) and (tail_char is not None):
-        return True, (
-            "You can only choose one of starting_char and tail_char."
-        )
-    
-
-    if starting_char is not None and starting_char < 0:
-        return True, "starting_char must not be negative."
-    if tail_char is not None and tail_char <= 0:
-        return True, "tail_char must be a positive number of characters."
-
+def _read_output(shell_id: str, read) -> tuple[bool, str]:
+    """get_output_beginning / get_output_tailing 的公共部分。read(session) 返回 (前置提示, OutputSlice)。"""
     with _sessions_lock:
         _reap_dead_sessions()
         entry = list_of_alive_shells.get(shell_id)
@@ -936,21 +901,10 @@ def get_output(
     # 而调用方看到 finished=True 就不会再来取了。
     finished = not session.is_busy()
 
-    clamped_note = ""
-    if tail_char is not None:
-        # 尾部读同样受 MAX_CHARS 约束,但要砍的是"更早的那头",所以在这里先夹一下,
-        # 不能像 read_output 那样从起点开始数 limit 个。
-        if tail_char > MAX_CHARS:
-            clamped_note = (
-                f"[asked for the last {tail_char} characters but at most {MAX_CHARS} "
-                "are returned at a time; use starting_char to reach further back.]\n"
-            )
-        sl = session.get_output_tail(min(tail_char, MAX_CHARS))
-    else:
-        sl = session.read_output(starting_char, MAX_CHARS)
+    note, sl = read(session)
 
     truncated = _truncation_notice(sl)
-    output = clamped_note + _discard_notice(sl) + _filter_output(sl.text) + truncated
+    output = note + _discard_notice(sl) + _filter_output(sl.text) + truncated
 
     # 只在读到末尾时报退出码,免得分页读到一半就显示"结束了"
     if finished and not truncated and session.last_execution_result is not None:
@@ -966,6 +920,49 @@ def get_output(
             _discard_session(shell_id, session)
 
     return finished, output
+
+
+@mcp.tool()
+def get_output_beginning(shell_id: str, starting_char: int = 0) -> tuple[bool, str]:
+    """
+    Read the output of the command a shell session is running, or has most recently run, forwards from a character offset.
+
+    Use this after execute_command reported that a command is still running in the background, and to page through output that was truncated for being too long. To see only how the output ends, such as the last screenful of a build log, use get_output_tailing instead.
+
+    :param shell_id: The identifier of the shell session to read from.
+    :param starting_char: The character offset to start reading at. Offsets are counted from the start of the current command's output and stay valid until the next command is started on this session. Defaults to 0, the very beginning.
+    :return: A pair (finished, output). "finished" is true when the session is idle, meaning the command has completed and no further output will appear; poll this tool until it becomes true. The output is truncated if it exceeds the length limit, and the notice at the end reports starting_char, ending_char and the total length, so call this tool again with starting_char set to that ending_char to read the next piece. If the very oldest output was dropped because the command produced more than the buffer holds, a notice at the beginning says so. If the session was killed for exceeding its timeout it no longer exists, and this returns (true, error message).
+    """
+    if starting_char < 0:
+        return True, "starting_char must not be negative."
+
+    return _read_output(shell_id, lambda session: ("", session.read_output(starting_char, MAX_CHARS)))
+
+
+@mcp.tool()
+def get_output_tailing(shell_id: str, tail_char: int) -> tuple[bool, str]:
+    """
+    Read the last part of the output of the command a shell session is running, or has most recently run.
+
+    Use this when you only care about how something ended, such as the last screenful of a build log, or to check on a long-running command without reading everything it has printed. To read the output in order from the beginning, use get_output_beginning instead.
+
+    :param shell_id: The identifier of the shell session to read from.
+    :param tail_char: The number of characters to read from the end of the output. At most the length limit is returned at a time; use get_output_beginning to reach further back.
+    :return: A pair (finished, output). "finished" is true when the session is idle, meaning the command has completed and no further output will appear; poll this tool until it becomes true. If the very oldest output was dropped because the command produced more than the buffer holds, a notice at the beginning says so. If the session was killed for exceeding its timeout it no longer exists, and this returns (true, error message).
+    """
+    if tail_char <= 0:
+        return True, "tail_char must be a positive number of characters."
+
+    # 尾部读同样受 MAX_CHARS 约束,但要砍的是"更早的那头",所以在这里先夹一下,
+    # 不能像 read_output 那样从起点开始数 limit 个。
+    note = ""
+    if tail_char > MAX_CHARS:
+        note = (
+            f"[asked for the last {tail_char} characters but at most {MAX_CHARS} "
+            "are returned at a time; use get_output_beginning to reach further back.]\n"
+        )
+
+    return _read_output(shell_id, lambda session: (note, session.get_output_tail(min(tail_char, MAX_CHARS))))
 
 
 _EXPECTED_AUTH = f"Bearer {TOKEN}"
@@ -993,6 +990,6 @@ app.add_middleware(AuthMiddleware)
 
 if __name__ == "__main__":
     print("***WARNING***: Basic safety filter is not guaranteed to block prompt injections. Do NOT use this in production. Use on your own risk.")
+    print("*** Basic filter only checks 26 English characters ***")
     uvicorn.run(app, host=BIND_HOST, port=BIND_PORT)
     print("***WARNING***: Basic safety filter is not guaranteed to block prompt injections. Do NOT use this in production. Use on your own risk.")
-    print("*** Basic filter only checks 26 English characters ***")
